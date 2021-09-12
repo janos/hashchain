@@ -3,9 +3,12 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// Package hashchain implements a compact append only log structure with integrity validation using cryptographic hash functions.
+
 package hashchain
 
 import (
+	"errors"
 	"time"
 )
 
@@ -24,3 +27,11 @@ type Record struct {
 	// Hash is the hash that validates the integrity of messages.
 	Hash []byte
 }
+
+var (
+	ErrNotFound           = errors.New("hashchain: not found")
+	ErrIntegrity          = errors.New("hashchain: integrity check failed")
+	ErrLogNotInitialized  = errors.New("hashchain: log not initialized")
+	ErrInvalidMessageSize = errors.New("hashchain: invalid record size")
+	ErrIncompleteRead     = errors.New("hashchain: incomplete read")
+)

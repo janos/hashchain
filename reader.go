@@ -42,14 +42,26 @@ func NewReader(r io.ReadSeeker, newHasher func() hash.Hash, messageSize int) *Re
 	}
 }
 
-// Read reads the hashchain Record with the provided ID.
+// Read reads the hashchain Record with the provided ID. If the value of the id
+// is negative, the last Record will be returned.
 func (r *Reader) Read(id int) (*Record, error) {
+
 	if id < 0 {
-		return nil, ErrNotFound
+		offset, err := r.r.Seek(0, io.SeekEnd)
+		if err != nil {
+			return nil, fmt.Errorf("see to the end of the hash chain: %w", err)
+		}
+		if offset < int64(r.recordSize) {
+			return nil, ErrNotFound
+		}
+		id = int(offset/int64(r.recordSize)) - 1
 	}
 
+	// store the complete record and the hash of the previous one for integrity check
 	data := make([]byte, r.hashSize+r.recordSize)
 	if id == 0 {
+		// read first record without the hash part as there is no previous record
+		// leaving the hash part with all zeros
 		if _, err := readAt(r.r, 0, data[r.hashSize:]); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil, ErrNotFound
@@ -57,6 +69,7 @@ func (r *Reader) Read(id int) (*Record, error) {
 			return nil, err
 		}
 	} else {
+		// read the current record completely and the hash of the previous record
 		if _, err := readAt(r.r, int64(id*r.recordSize-r.hashSize), data); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil, ErrNotFound
@@ -80,31 +93,39 @@ func (r *Reader) Read(id int) (*Record, error) {
 	return record, nil
 }
 
-// Iterate reads messages in reverse order as they were written from the start ID.
-// If the start ID is negative number, the iteration will start from the last record.
+// Iterate reads messages in reverse order as they were written from the start
+// ID. If the start ID is negative number, the iteration will start from the
+// last record. Message and Hash byte slices in Record passed to the callback
+// function are only valid until the function returns and must not be used
+// outside of that function as slice content may change during iteration.
 func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
 	var offset int64
 	if startID < 0 {
+		// start from the last record if startID is negative
 		var err error
 		offset, err = r.r.Seek(0, io.SeekEnd)
 		if err != nil {
-			return err
+			return fmt.Errorf("seek to the end of the hash chain: %w", err)
 		}
 		if offset < int64(r.recordSize) {
 			return ErrNotFound
 		}
 	} else {
-		startOffset := int64(startID) * int64(r.recordSize)
+		// seek to the start record position
+		startOffset := int64(startID+1) * int64(r.recordSize)
 		var err error
 		offset, err = r.r.Seek(startOffset, io.SeekStart)
 		if err != nil {
-			return err
+			return fmt.Errorf("see to the end start position: %w", err)
 		}
 		if offset != startOffset {
 			return ErrNotFound
 		}
 	}
 
+	if offset < int64(r.recordSize) {
+		return ErrNotFound
+	}
 	hash := make([]byte, r.hashSize)
 	offset, err := readAt(r.r, offset-int64(r.hashSize), hash)
 	if err != nil {
@@ -112,21 +133,28 @@ func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
 	}
 
 	nextRecordOffset := offset - int64(r.hashSize) - int64(r.recordSize)
+	if nextRecordOffset < 0 {
+		nextRecordOffset = 0
+	}
 
 	data := make([]byte, r.recordSize)
 	for {
 		if nextRecordOffset == 0 {
+			// read the first record without the hash of the non existing
+			// previous record
 			offset, err = readAt(r.r, nextRecordOffset, data[r.hashSize:])
 			if err != nil {
-				return err
+				return fmt.Errorf("seek to the end of the hash chain: %w", err)
 			}
+			// zero out the hash of the non existing previous record of the
+			// first record
 			for i := 0; i < r.hashSize; i++ {
 				data[i] = 0
 			}
 		} else {
 			offset, err = readAt(r.r, nextRecordOffset, data)
 			if err != nil {
-				return err
+				return fmt.Errorf("seek to the end of the hash chain: %w", err)
 			}
 		}
 
@@ -189,10 +217,13 @@ func readAt(r io.ReadSeeker, offset int64, data []byte) (int64, error) {
 
 	n, err := r.Read(data)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return 0, ErrNotFound
+		}
 		return 0, fmt.Errorf("read %v: %w", offset, err)
 	}
 	if n != len(data) {
-		return 0, errIncompleteRead
+		return 0, ErrIncompleteRead
 	}
 
 	return c + int64(n), nil

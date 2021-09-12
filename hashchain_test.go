@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +46,38 @@ func TestHashchain(t *testing.T) {
 	assertError(t, err, nil)
 	assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
 
+	r, err = reader.Read(-1)
+	assertError(t, err, nil)
+	assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+
+	i := 0
+	if err := reader.Iterate(-1, func(r *hashchain.Record) (bool, error) {
+		switch i {
+		case 0:
+			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+		default:
+			t.Errorf("got unexpected record %v", r)
+		}
+		i--
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	i = 0
+	if err := reader.Iterate(0, func(r *hashchain.Record) (bool, error) {
+		switch i {
+		case 0:
+			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+		default:
+			t.Errorf("got unexpected record %v", r)
+		}
+		i--
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	message2 := "message 2"
 	message2Time := time.Now()
 
@@ -64,7 +95,15 @@ func TestHashchain(t *testing.T) {
 	assertError(t, err, nil)
 	assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
 
-	i := 1
+	r, err = reader.Read(-1)
+	assertError(t, err, nil)
+	assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
+
+	r, err = reader.Read(0)
+	assertError(t, err, nil)
+	assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+
+	i = 1
 	if err := reader.Iterate(-1, func(r *hashchain.Record) (bool, error) {
 		switch i {
 		case 0:
@@ -77,7 +116,37 @@ func TestHashchain(t *testing.T) {
 		i--
 		return true, nil
 	}); err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
+	}
+
+	i = 1
+	if err := reader.Iterate(1, func(r *hashchain.Record) (bool, error) {
+		switch i {
+		case 0:
+			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+		case 1:
+			assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
+		default:
+			t.Errorf("got unexpected record %v", r)
+		}
+		i--
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	i = 0
+	if err := reader.Iterate(0, func(r *hashchain.Record) (bool, error) {
+		switch i {
+		case 0:
+			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+		default:
+			t.Errorf("got unexpected record %v", r)
+		}
+		i--
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -133,7 +202,7 @@ func TestWriterReopen(t *testing.T) {
 		i--
 		return true, nil
 	}); err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 
 	if err := f.Close(); err != nil {
@@ -145,24 +214,10 @@ func TestReaderNoData(t *testing.T) {
 	r := hashchain.NewReader(strings.NewReader(""), hasher, 10)
 
 	for i := -2; i < 2; i++ {
-		_, err := r.Read(-1)
+		_, err := r.Read(i)
 		assertError(t, err, hashchain.ErrNotFound)
 
-		err = r.Iterate(-1, func(*hashchain.Record) (bool, error) {
-			return true, nil
-		})
-		assertError(t, err, hashchain.ErrNotFound)
-	}
-}
-
-func TestReaderShortData(t *testing.T) {
-	r := hashchain.NewReader(strings.NewReader("short"), hasher, 10)
-
-	for i := -2; i < 2; i++ {
-		_, err := r.Read(-1)
-		assertError(t, err, hashchain.ErrNotFound)
-
-		err = r.Iterate(-1, func(*hashchain.Record) (bool, error) {
+		err = r.Iterate(i, func(*hashchain.Record) (bool, error) {
 			return true, nil
 		})
 		assertError(t, err, hashchain.ErrNotFound)
