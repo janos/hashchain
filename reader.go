@@ -108,7 +108,7 @@ func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
 			return fmt.Errorf("seek to the end of the hash chain: %w", err)
 		}
 		if offset < int64(r.recordSize) {
-			return ErrNotFound
+			return nil
 		}
 	} else {
 		// seek to the start record position

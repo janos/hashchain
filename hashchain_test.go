@@ -220,7 +220,11 @@ func TestReaderNoData(t *testing.T) {
 		err = r.Iterate(i, func(*hashchain.Record) (bool, error) {
 			return true, nil
 		})
-		assertError(t, err, hashchain.ErrNotFound)
+		if i < 0 {
+			assertError(t, err, nil)
+		} else {
+			assertError(t, err, hashchain.ErrNotFound)
+		}
 	}
 }
 
