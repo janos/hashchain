@@ -13,17 +13,17 @@ import (
 )
 
 const (
-	timestmpSize = 8
+	timestampSize = 8
 )
 
 // Record holds information about the written message.
-type Record struct {
+type Record[T any] struct {
 	// ID is the serial number of the message.
 	ID int
 	// Time is the time of the message.
 	Time time.Time
-	// Message is the actual message data.
-	Message []byte
+	// Message is the actual stored message.
+	Message T
 	// Hash is the hash that validates the integrity of messages.
 	Hash []byte
 }
@@ -34,4 +34,5 @@ var (
 	ErrLogNotInitialized  = errors.New("hashchain: log not initialized")
 	ErrInvalidMessageSize = errors.New("hashchain: invalid record size")
 	ErrIncompleteRead     = errors.New("hashchain: incomplete read")
+	ErrIncompleteWrite    = errors.New("hashchain: incomplete write")
 )

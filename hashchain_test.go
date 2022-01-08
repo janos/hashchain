@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,39 +23,48 @@ var (
 	hasher = sha256.New
 )
 
+func encodeStringFunc(b []byte, s string) (int, error) {
+	return copy(b, s), nil
+}
+
+func decodeStringFunc(s *string, b []byte) (int, error) {
+	*s = string(b)
+	return len(*s), nil
+}
+
 func TestHashchain(t *testing.T) {
 	f := newFile(t)
 	defer f.Close()
 
 	messageSize := 9
 
-	writer, err := hashchain.NewWriter(f, hasher, messageSize)
+	writer, err := hashchain.NewWriter(f, hasher, encodeStringFunc, messageSize)
 	assertError(t, err, nil)
 
 	message1 := "message 1"
 	message1Time := time.Now()
 
-	id1, hash1, err := writer.Write(message1Time, []byte(message1))
+	id1, hash1, err := writer.Write(message1Time, message1)
 	assertError(t, err, nil)
 	if id1 != 0 {
 		t.Errorf("got id %v, want 0", id1)
 	}
 
-	reader := hashchain.NewReader(f, hasher, messageSize)
+	reader := hashchain.NewReader(f, hasher, decodeStringFunc, messageSize)
 
 	r, err := reader.Read(0)
 	assertError(t, err, nil)
-	assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+	assertRecord(t, r, 0, message1Time, message1, hash1)
 
 	r, err = reader.Read(-1)
 	assertError(t, err, nil)
-	assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+	assertRecord(t, r, 0, message1Time, message1, hash1)
 
 	i := 0
-	if err := reader.Iterate(-1, func(r *hashchain.Record) (bool, error) {
+	if err := reader.Iterate(-1, func(r *hashchain.Record[string]) (bool, error) {
 		switch i {
 		case 0:
-			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+			assertRecord(t, r, 0, message1Time, message1, hash1)
 		default:
 			t.Errorf("got unexpected record %v", r)
 		}
@@ -65,10 +75,10 @@ func TestHashchain(t *testing.T) {
 	}
 
 	i = 0
-	if err := reader.Iterate(0, func(r *hashchain.Record) (bool, error) {
+	if err := reader.Iterate(0, func(r *hashchain.Record[string]) (bool, error) {
 		switch i {
 		case 0:
-			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+			assertRecord(t, r, 0, message1Time, message1, hash1)
 		default:
 			t.Errorf("got unexpected record %v", r)
 		}
@@ -81,7 +91,7 @@ func TestHashchain(t *testing.T) {
 	message2 := "message 2"
 	message2Time := time.Now()
 
-	id2, hash2, err := writer.Write(message2Time, []byte(message2))
+	id2, hash2, err := writer.Write(message2Time, message2)
 	assertError(t, err, nil)
 	if id2 != 1 {
 		t.Errorf("got id %v, want 1", id2)
@@ -93,23 +103,23 @@ func TestHashchain(t *testing.T) {
 
 	r, err = reader.Read(1)
 	assertError(t, err, nil)
-	assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
+	assertRecord(t, r, 1, message2Time, message2, hash2)
 
 	r, err = reader.Read(-1)
 	assertError(t, err, nil)
-	assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
+	assertRecord(t, r, 1, message2Time, message2, hash2)
 
 	r, err = reader.Read(0)
 	assertError(t, err, nil)
-	assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+	assertRecord(t, r, 0, message1Time, message1, hash1)
 
 	i = 1
-	if err := reader.Iterate(-1, func(r *hashchain.Record) (bool, error) {
+	if err := reader.Iterate(-1, func(r *hashchain.Record[string]) (bool, error) {
 		switch i {
 		case 0:
-			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+			assertRecord(t, r, 0, message1Time, message1, hash1)
 		case 1:
-			assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
+			assertRecord(t, r, 1, message2Time, message2, hash2)
 		default:
 			t.Errorf("got unexpected record %v", r)
 		}
@@ -120,12 +130,12 @@ func TestHashchain(t *testing.T) {
 	}
 
 	i = 1
-	if err := reader.Iterate(1, func(r *hashchain.Record) (bool, error) {
+	if err := reader.Iterate(1, func(r *hashchain.Record[string]) (bool, error) {
 		switch i {
 		case 0:
-			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+			assertRecord(t, r, 0, message1Time, message1, hash1)
 		case 1:
-			assertRecord(t, r, 1, message2Time, []byte(message2), hash2)
+			assertRecord(t, r, 1, message2Time, message2, hash2)
 		default:
 			t.Errorf("got unexpected record %v", r)
 		}
@@ -136,10 +146,10 @@ func TestHashchain(t *testing.T) {
 	}
 
 	i = 0
-	if err := reader.Iterate(0, func(r *hashchain.Record) (bool, error) {
+	if err := reader.Iterate(0, func(r *hashchain.Record[string]) (bool, error) {
 		switch i {
 		case 0:
-			assertRecord(t, r, 0, message1Time, []byte(message1), hash1)
+			assertRecord(t, r, 0, message1Time, message1, hash1)
 		default:
 			t.Errorf("got unexpected record %v", r)
 		}
@@ -155,13 +165,13 @@ func TestWriterReopen(t *testing.T) {
 
 	messageSize := 9
 
-	writer, err := hashchain.NewWriter(f, hasher, messageSize)
+	writer, err := hashchain.NewWriter(f, hasher, encodeStringFunc, messageSize)
 	assertError(t, err, nil)
 
 	message1 := "message 1"
 	message1Time := time.Now()
 
-	id1, hash1, err := writer.Write(message1Time, []byte(message1))
+	id1, hash1, err := writer.Write(message1Time, message1)
 	assertError(t, err, nil)
 
 	if err := f.Close(); err != nil {
@@ -171,13 +181,13 @@ func TestWriterReopen(t *testing.T) {
 	f, err = os.OpenFile(f.Name(), os.O_RDWR, 0o666)
 	assertError(t, err, nil)
 
-	writer, err = hashchain.NewWriter(f, hasher, messageSize)
+	writer, err = hashchain.NewWriter(f, hasher, encodeStringFunc, messageSize)
 	assertError(t, err, nil)
 
 	message2 := "message 2"
 	message2Time := time.Now()
 
-	id2, hash2, err := writer.Write(message2Time, []byte(message2))
+	id2, hash2, err := writer.Write(message2Time, message2)
 	assertError(t, err, nil)
 
 	if err := f.Close(); err != nil {
@@ -187,15 +197,15 @@ func TestWriterReopen(t *testing.T) {
 	f, err = os.Open(f.Name())
 	assertError(t, err, nil)
 
-	reader := hashchain.NewReader(f, hasher, messageSize)
+	reader := hashchain.NewReader(f, hasher, decodeStringFunc, messageSize)
 
 	i := 1
-	if err := reader.Iterate(-1, func(r *hashchain.Record) (bool, error) {
+	if err := reader.Iterate(-1, func(r *hashchain.Record[string]) (bool, error) {
 		switch i {
 		case 0:
-			assertRecord(t, r, id1, message1Time, []byte(message1), hash1)
+			assertRecord(t, r, id1, message1Time, message1, hash1)
 		case 1:
-			assertRecord(t, r, id2, message2Time, []byte(message2), hash2)
+			assertRecord(t, r, id2, message2Time, message2, hash2)
 		default:
 			t.Errorf("got unexpected record %v", r)
 		}
@@ -211,13 +221,13 @@ func TestWriterReopen(t *testing.T) {
 }
 
 func TestReaderNoData(t *testing.T) {
-	r := hashchain.NewReader(strings.NewReader(""), hasher, 10)
+	r := hashchain.NewReader(strings.NewReader(""), hasher, decodeStringFunc, 10)
 
 	for i := -2; i < 2; i++ {
 		_, err := r.Read(i)
 		assertError(t, err, hashchain.ErrNotFound)
 
-		err = r.Iterate(i, func(*hashchain.Record) (bool, error) {
+		err = r.Iterate(i, func(*hashchain.Record[string]) (bool, error) {
 			return true, nil
 		})
 		if i < 0 {
@@ -247,7 +257,7 @@ func assertError(t *testing.T, got, want error) {
 	}
 }
 
-func assertRecord(t *testing.T, got *hashchain.Record, id int, ta time.Time, message, hash []byte) {
+func assertRecord[T any](t *testing.T, got *hashchain.Record[T], id int, ta time.Time, message T, hash []byte) {
 	t.Helper()
 
 	if id != got.ID {
@@ -256,8 +266,8 @@ func assertRecord(t *testing.T, got *hashchain.Record, id int, ta time.Time, mes
 	if !got.Time.Equal(ta) {
 		t.Errorf("got time %s, want %s", got.Time, ta)
 	}
-	if !bytes.Equal(message, got.Message) {
-		t.Errorf("got message %x, want %x", got.Message, message)
+	if !reflect.DeepEqual(message, got.Message) {
+		t.Errorf("got message %v, want %v", got.Message, message)
 	}
 	if !bytes.Equal(hash, got.Hash) {
 		t.Errorf("got hash %x, want %x", got.Hash, hash)

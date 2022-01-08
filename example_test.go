@@ -32,31 +32,42 @@ func ExampleMain() {
 		}
 	}()
 
+	messageLength := 34
+
+	encodeFunc := func(b []byte, s string) (int, error) {
+		return copy(b, []byte(s)), nil
+	}
+
+	decodeFunc := func(s *string, b []byte) (int, error) {
+		*s = string(b)
+		return len(*s), nil
+	}
+
 	// Create a writer and write some messages.
-	writer, err := hashchain.NewWriter(f, sha256.New, 34)
+	writer, err := hashchain.NewWriter(f, sha256.New, encodeFunc, messageLength)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, _, err = writer.Write(time.Now(), []byte("something interesting has happened"))
+	_, _, err = writer.Write(time.Now(), "something interesting has happened")
 	if err != nil {
 		log.Fatal(err)
 	}
-	id2, _, err := writer.Write(time.Now(), []byte("something else has happened, again"))
+	id2, _, err := writer.Write(time.Now(), "something else has happened, again")
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Create a reader, read one message and iterate on all messages.
-	reader := hashchain.NewReader(f, sha256.New, 34)
+	reader := hashchain.NewReader(f, sha256.New, decodeFunc, messageLength)
 
 	r, err := reader.Read(id2)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("got second message:", string(r.Message))
+	fmt.Println("got second message:", r.Message)
 
-	if err := reader.Iterate(-1, func(r *hashchain.Record) (bool, error) {
-		fmt.Println("iterate on message:", r.ID, string(r.Message))
+	if err := reader.Iterate(-1, func(r *hashchain.Record[string]) (bool, error) {
+		fmt.Println("iterate on message:", r.ID, r.Message)
 		return true, nil
 	}); err != nil {
 		log.Fatal(err)

@@ -16,11 +16,12 @@ import (
 
 // Writer appends new messages to the hashchain with a hash to be able to
 // validate the integrity of the log.
-type Writer struct {
+type Writer[T any] struct {
 	w            io.ReadWriteSeeker
 	hasher       hash.Hash
 	hashSize     int
 	messageSize  int
+	encode       func([]byte, T) (int, error)
 	lastRecordID int
 	buf          []byte
 	mu           sync.Mutex
@@ -28,9 +29,9 @@ type Writer struct {
 
 // NewWriter creates a new hashcahin Writer that will append new messages to the
 // provider io.ReadWriteSeeker. Integrity checksums will be constructed with the
-// hasher. It is required to provide the message size information. All written
-// messages have to be of the same size.
-func NewWriter(w io.ReadWriteSeeker, newHasher func() hash.Hash, messageSize int) (*Writer, error) {
+// hasher. It is required to provide the message encoded size information. All
+// written encoded messages have to be of the same size.
+func NewWriter[T any](w io.ReadWriteSeeker, newHasher func() hash.Hash, encode func([]byte, T) (int, error), messageSize int) (*Writer[T], error) {
 	offset, err := w.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, fmt.Errorf("seek to the end of the chain: %w", err)
@@ -38,7 +39,7 @@ func NewWriter(w io.ReadWriteSeeker, newHasher func() hash.Hash, messageSize int
 	hasher := newHasher()
 	hashSize := hasher.Size()
 	// create a buffer to store data on every record write to reduce allocations
-	buf := make([]byte, hashSize+timestmpSize+messageSize+hashSize)
+	buf := make([]byte, hashSize+timestampSize+messageSize+hashSize)
 	if offset > int64(hashSize) {
 		// read the hash of the last record to the buffer
 		o, err := readAt(w, offset-int64(hashSize), buf[:hashSize])
@@ -47,40 +48,46 @@ func NewWriter(w io.ReadWriteSeeker, newHasher func() hash.Hash, messageSize int
 		}
 		offset = o
 	}
-	return &Writer{
+	return &Writer[T]{
 		w:            w,
 		hasher:       hasher,
 		hashSize:     hashSize,
 		messageSize:  messageSize,
-		lastRecordID: int(offset/int64(timestmpSize+messageSize+hashSize)) - 1,
+		encode:       encode,
+		lastRecordID: int(offset/int64(timestampSize+messageSize+hashSize)) - 1,
 		buf:          buf,
 	}, nil
 }
 
-// Write appends the timestamp and the message to the hashchain. The message
-// size has to be the same as specified to NewWriter. This function returns the
-// ID of the written record that can be used to read the message and the hash
-// for integrity validation.
-func (w *Writer) Write(t time.Time, message []byte) (id int, hash []byte, err error) {
+// Write appends the timestamp and the message to the hashchain. The encoded
+// message size has to be the same as specified to NewWriter or
+// ErrIncompleteWrite will be returned. This function returns the ID of the
+// written record that can be used to read the message and the hash for
+// integrity validation.
+func (w *Writer[T]) Write(t time.Time, message T) (id int, hash []byte, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// ensure that the message is of the exact the expected size
-	if l := len(message); l != w.messageSize {
-		return 0, nil, fmt.Errorf("%w: message size %v instead %v", ErrInvalidMessageSize, l, w.messageSize)
-	}
-
 	// encode time at the place after the hash of the last record
-	binary.BigEndian.PutUint64(w.buf[w.hashSize:w.hashSize+timestmpSize], uint64(t.UnixNano()))
+	binary.BigEndian.PutUint64(w.buf[w.hashSize:w.hashSize+timestampSize], uint64(t.UnixNano()))
 	// copy message after the previously stored timestamp
-	copy(w.buf[w.hashSize+timestmpSize:w.hashSize+timestmpSize+w.messageSize], message)
+
+	b := w.buf[w.hashSize+timestampSize : w.hashSize+timestampSize+w.messageSize]
+
+	n, err := w.encode(b, message)
+	if err != nil {
+		return 0, nil, fmt.Errorf("encode: %w", err)
+	}
+	if n != w.messageSize {
+		return 0, nil, ErrIncompleteWrite
+	}
 
 	// calculate the hash of previous record's hash, current record timestamp and
 	// message
 	w.hasher.Reset()
-	w.hasher.Write(w.buf[:w.hashSize+timestmpSize+w.messageSize])
+	w.hasher.Write(w.buf[:w.hashSize+timestampSize+w.messageSize])
 	// append the hash of the current record after the message
-	w.buf = w.hasher.Sum(w.buf[:w.hashSize+timestmpSize+w.messageSize])
+	w.buf = w.hasher.Sum(w.buf[:w.hashSize+timestampSize+w.messageSize])
 
 	if _, err := w.w.Seek(0, io.SeekEnd); err != nil {
 		return 0, nil, fmt.Errorf("seek to the end of the hash chain: %w", err)
@@ -93,7 +100,7 @@ func (w *Writer) Write(t time.Time, message []byte) (id int, hash []byte, err er
 
 	hash = make([]byte, w.hashSize)
 	// copy the current record hash to be returned safely
-	copy(hash, w.buf[w.hashSize+timestmpSize+w.messageSize:])
+	copy(hash, w.buf[w.hashSize+timestampSize+w.messageSize:])
 	// copy the hash to the end of the beginning of the buffer
 	// for next write to use it for hashing
 	copy(w.buf[:w.hashSize], hash)

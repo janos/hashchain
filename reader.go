@@ -17,34 +17,36 @@ import (
 )
 
 // Reader reads records from the hashchain.
-type Reader struct {
+type Reader[T any] struct {
 	r          io.ReadSeeker
 	hashSize   int
 	recordSize int
+	decode     func(*T, []byte) (int, error)
 	hasherPool *sync.Pool
 }
 
 // NewReader creates a new hashchain Reader. It verifies the integrity of the
 // hahschain using the provided hasher and it needs a message size in order to
 // read records correctly.
-func NewReader(r io.ReadSeeker, newHasher func() hash.Hash, messageSize int) *Reader {
+func NewReader[T any](r io.ReadSeeker, newHasher func() hash.Hash, decode func(*T, []byte) (int, error), messageSize int) *Reader[T] {
 	hashSize := newHasher().Size()
 	hasherPool := &sync.Pool{
 		New: func() interface{} {
 			return newHasher()
 		},
 	}
-	return &Reader{
+	return &Reader[T]{
 		r:          r,
-		hasherPool: hasherPool,
 		hashSize:   hashSize,
-		recordSize: timestmpSize + messageSize + hashSize,
+		recordSize: timestampSize + messageSize + hashSize,
+		decode:     decode,
+		hasherPool: hasherPool,
 	}
 }
 
 // Read reads the hashchain Record with the provided ID. If the value of the id
 // is negative, the last Record will be returned.
-func (r *Reader) Read(id int) (*Record, error) {
+func (r *Reader[T]) Read(id int) (*Record[T], error) {
 
 	if id < 0 {
 		offset, err := r.r.Seek(0, io.SeekEnd)
@@ -84,21 +86,22 @@ func (r *Reader) Read(id int) (*Record, error) {
 		return nil, ErrIntegrity
 	}
 
-	record := &Record{
+	record := &Record[T]{
 		ID:   id,
 		Hash: hash,
 	}
-	decodeRecord(data[r.hashSize:r.recordSize], record)
+
+	if _, err := decodeRecord(data[r.hashSize:r.recordSize], record, r.decode); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
 
 	return record, nil
 }
 
 // Iterate reads messages in reverse order as they were written from the start
 // ID. If the start ID is negative number, the iteration will start from the
-// last record. Message and Hash byte slices in Record passed to the callback
-// function are only valid until the function returns and must not be used
-// outside of that function as slice content may change during iteration.
-func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
+// last record.
+func (r *Reader[T]) Iterate(startID int, f func(*Record[T]) (bool, error)) error {
 	var offset int64
 	if startID < 0 {
 		// start from the last record if startID is negative
@@ -160,7 +163,7 @@ func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
 
 		id := offset / int64(r.recordSize)
 
-		record := &Record{
+		record := &Record[T]{
 			ID:   int(id),
 			Hash: hash,
 		}
@@ -169,7 +172,9 @@ func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
 			return fmt.Errorf("record %v: %w", id, ErrIntegrity)
 		}
 
-		decodeRecord(data[r.hashSize:], record)
+		if _, err := decodeRecord(data[r.hashSize:], record, r.decode); err != nil {
+			return fmt.Errorf("record %v: decode: %w", id, err)
+		}
 
 		cont, err := f(record)
 		if err != nil {
@@ -194,7 +199,7 @@ func (r *Reader) Iterate(startID int, f func(*Record) (bool, error)) error {
 	return nil
 }
 
-func (r *Reader) validateIntegrity(h []byte, data []byte) bool {
+func (r *Reader[T]) validateIntegrity(h []byte, data []byte) bool {
 	x := r.hasherPool.Get()
 	defer r.hasherPool.Put(x)
 
@@ -229,8 +234,8 @@ func readAt(r io.ReadSeeker, offset int64, data []byte) (int64, error) {
 	return c + int64(n), nil
 }
 
-func decodeRecord(data []byte, r *Record) {
-	timestamp := int64(binary.BigEndian.Uint64(data[:timestmpSize]))
+func decodeRecord[T any](data []byte, r *Record[T], decode func(*T, []byte) (int, error)) (int, error) {
+	timestamp := int64(binary.BigEndian.Uint64(data[:timestampSize]))
 	r.Time = time.Unix(timestamp/int64(time.Second), timestamp%int64(time.Second))
-	r.Message = data[timestmpSize:]
+	return decode(&r.Message, data[timestampSize:])
 }
